@@ -37,6 +37,8 @@ struct Args {
     output_root: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     persist: bool,
+    #[arg(long = "artifact-mode", value_enum)]
+    artifact_mode: Option<ArtifactMode>,
     #[arg(long, value_enum, default_value_t = ProductDisplayMode::Summary)]
     products: ProductDisplayMode,
 }
@@ -60,6 +62,9 @@ pub fn run() -> Result<()> {
         queue_penetration: args.queue_penetration,
         price_slippage_bps: args.price_slippage_bps,
     };
+    let artifact_mode = resolve_artifact_mode(&args);
+    let (persist, write_metrics, write_submission_log, materialize_artifacts) =
+        artifact_mode_settings(artifact_mode);
 
     for plan in plans {
         let output = run_backtest(&RunRequest {
@@ -69,9 +74,10 @@ pub fn run() -> Result<()> {
             matching: matching.clone(),
             run_id: Some(plan.run_id),
             output_root: output_root.clone(),
-            persist: args.persist,
-            write_submission_log: true,
-            materialize_artifacts: args.persist,
+            persist,
+            write_metrics,
+            write_submission_log,
+            materialize_artifacts,
             metadata_overrides: Default::default(),
         })?;
 
@@ -87,7 +93,7 @@ pub fn run() -> Result<()> {
         outputs.push(output);
     }
 
-    let bundle_dir = if args.persist && outputs.len() > 1 {
+    let bundle_dir = if persist && outputs.len() > 1 {
         Some(write_combined_bundle(
             &output_root,
             &run_id_seed,
@@ -104,7 +110,7 @@ pub fn run() -> Result<()> {
         &rows,
         &trader,
         &dataset,
-        args.persist,
+        artifact_mode,
         args.products,
         bundle_dir.as_deref(),
     );
@@ -160,6 +166,31 @@ enum ProductDisplayMode {
     Off,
     Summary,
     Full,
+}
+
+#[derive(Debug, Copy, Clone, Eq, PartialEq, ValueEnum)]
+enum ArtifactMode {
+    None,
+    Submission,
+    Full,
+}
+
+fn resolve_artifact_mode(args: &Args) -> ArtifactMode {
+    if let Some(mode) = args.artifact_mode {
+        return mode;
+    }
+    if args.persist {
+        return ArtifactMode::Full;
+    }
+    ArtifactMode::Submission
+}
+
+fn artifact_mode_settings(mode: ArtifactMode) -> (bool, bool, bool, bool) {
+    match mode {
+        ArtifactMode::None => (false, true, false, false),
+        ArtifactMode::Submission => (false, true, true, false),
+        ArtifactMode::Full => (true, true, true, true),
+    }
 }
 
 fn build_run_plan(
@@ -725,7 +756,7 @@ fn print_summary(
     rows: &[SummaryRow],
     trader: &ResolvedTrader,
     dataset: &ResolvedDataset,
-    persist: bool,
+    artifact_mode: ArtifactMode,
     products: ProductDisplayMode,
     bundle_dir: Option<&str>,
 ) {
@@ -744,7 +775,14 @@ fn print_summary(
         }
     );
     println!("mode: fast");
-    println!("artifacts: {}", if persist { "saved" } else { "log-only" });
+    println!(
+        "artifacts: {}",
+        match artifact_mode {
+            ArtifactMode::None => "metrics-only",
+            ArtifactMode::Submission => "log-only",
+            ArtifactMode::Full => "saved",
+        }
+    );
     if let Some(bundle_dir) = bundle_dir {
         println!("bundle: {bundle_dir}");
     }

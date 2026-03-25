@@ -49,7 +49,9 @@ def load_trader_instance(module_name, trader_file, datamodel_module):
 
     module = importlib.util.module_from_spec(spec)
     old_datamodel = sys.modules.get("datamodel")
+    old_module = sys.modules.get(module_name)
     sys.modules["datamodel"] = datamodel_module
+    sys.modules[module_name] = module
     try:
         spec.loader.exec_module(module)
     finally:
@@ -57,6 +59,10 @@ def load_trader_instance(module_name, trader_file, datamodel_module):
             sys.modules.pop("datamodel", None)
         else:
             sys.modules["datamodel"] = old_datamodel
+        if old_module is None:
+            sys.modules.pop(module_name, None)
+        else:
+            sys.modules[module_name] = old_module
 
     if not hasattr(module, "Trader"):
         raise RuntimeError("Trader file does not define a Trader class")

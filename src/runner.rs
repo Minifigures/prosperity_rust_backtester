@@ -137,7 +137,7 @@ pub fn run_backtest(request: &RunRequest) -> Result<RunOutput> {
     let run_dir = request.output_root.join(&run_id);
     let need_submission_log = request.persist || request.write_submission_log;
     let full_artifacts = request.persist || request.materialize_artifacts;
-    if need_submission_log {
+    if need_submission_log || request.write_metrics {
         fs::create_dir_all(&run_dir)
             .with_context(|| format!("failed to create run directory {}", run_dir.display()))?;
     }
@@ -346,7 +346,7 @@ pub fn run_backtest(request: &RunRequest) -> Result<RunOutput> {
     ]);
     let result_json = sorted_json_bytes(&result_value)?;
 
-    let artifacts = if need_submission_log {
+    let artifacts = if need_submission_log || request.write_metrics {
         let bundle_value = object(vec![
             (
                 "run",
@@ -389,7 +389,7 @@ pub fn run_backtest(request: &RunRequest) -> Result<RunOutput> {
         } else {
             Vec::new()
         };
-        let metrics_json = if full_artifacts {
+        let metrics_json = if full_artifacts || request.write_metrics {
             sorted_json_bytes(&metrics_value)?
         } else {
             Vec::new()
@@ -399,12 +399,16 @@ pub fn run_backtest(request: &RunRequest) -> Result<RunOutput> {
         } else {
             Vec::new()
         };
-        let submission_log = build_submission_log(
-            &run_id,
-            &activity_rows,
-            &sandbox_rows,
-            &combined_trade_history,
-        )?;
+        let submission_log = if need_submission_log {
+            build_submission_log(
+                &run_id,
+                &activity_rows,
+                &sandbox_rows,
+                &combined_trade_history,
+            )?
+        } else {
+            Vec::new()
+        };
         let pnl_by_product_csv = if full_artifacts {
             build_pnl_csv(&dataset.products, &bundle_value)?
         } else {
@@ -432,6 +436,8 @@ pub fn run_backtest(request: &RunRequest) -> Result<RunOutput> {
 
         if request.persist {
             write_artifacts(&run_dir, &artifact_set)?;
+        } else if request.write_metrics {
+            write_metrics_only(&run_dir, &artifact_set)?;
         } else if request.write_submission_log {
             write_submission_log_only(&run_dir, &artifact_set)?;
         }
@@ -1156,6 +1162,11 @@ fn write_artifacts(run_dir: &Path, artifacts: &ArtifactSet) -> Result<()> {
 
 fn write_submission_log_only(run_dir: &Path, artifacts: &ArtifactSet) -> Result<()> {
     fs::write(run_dir.join("submission.log"), &artifacts.submission_log)?;
+    Ok(())
+}
+
+fn write_metrics_only(run_dir: &Path, artifacts: &ArtifactSet) -> Result<()> {
+    fs::write(run_dir.join("metrics.json"), &artifacts.metrics_json)?;
     Ok(())
 }
 
