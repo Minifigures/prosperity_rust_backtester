@@ -218,23 +218,8 @@ pub fn run_backtest(request: &RunRequest) -> Result<RunOutput> {
                 .get(product)
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
-            let original_market: Vec<Trade> = market_trades
-                .iter()
-                .map(|trade| Trade {
-                    symbol: product.clone(),
-                    price: trade.price,
-                    quantity: trade.quantity,
-                    buyer: trade.buyer.clone(),
-                    seller: trade.seller.clone(),
-                    timestamp: if trade.timestamp == 0 {
-                        tick.timestamp
-                    } else {
-                        trade.timestamp
-                    },
-                })
-                .collect();
 
-            let (symbol_own_trades, _remaining_market, symbol_orders) = match_orders_for_symbol(
+            let (symbol_own_trades, remaining_market, symbol_orders) = match_orders_for_symbol(
                 product,
                 orders_by_symbol.get(product).cloned().unwrap_or_default(),
                 &mut bids,
@@ -248,7 +233,7 @@ pub fn run_backtest(request: &RunRequest) -> Result<RunOutput> {
             );
 
             if need_submission_log {
-                for trade in &original_market {
+                for trade in &remaining_market {
                     combined_trade_history.push(trade_history_json(trade, tick.day));
                 }
                 for trade in &symbol_own_trades {
@@ -266,8 +251,8 @@ pub fn run_backtest(request: &RunRequest) -> Result<RunOutput> {
                 own_trade_count += symbol_own_trades.len();
                 own_trades_tick.insert(product.clone(), symbol_own_trades);
             }
-            if !original_market.is_empty() {
-                market_trades_next.insert(product.clone(), original_market);
+            if !remaining_market.is_empty() {
+                market_trades_next.insert(product.clone(), remaining_market);
             }
         }
 
@@ -1609,6 +1594,136 @@ class Trader:
         assert_eq!(timeline[1]["position"]["EMERALDS"].as_i64(), Some(1));
         assert_eq!(timeline[0]["algorithm_logs"].as_str(), Some("seen=0"));
         assert_eq!(timeline[1]["algorithm_logs"].as_str(), Some("seen=1"));
+
+        fs::remove_dir_all(output_root).expect("temp output root should be cleaned up");
+    }
+
+    #[test]
+    fn consumed_market_trade_is_removed_from_bundle_timeline() {
+        let unique = format!(
+            "runner-market-consume-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be after epoch")
+                .as_nanos()
+        );
+        let output_root = std::env::temp_dir().join(&unique);
+        fs::create_dir_all(&output_root).expect("temp output root should exist");
+        let trader_file = output_root.join("consume_market_trade_trader.py");
+        fs::write(
+            &trader_file,
+            r#"from datamodel import Order, TradingState
+
+class Trader:
+    def run(self, state: TradingState):
+        return {"TOMATOES": [Order("TOMATOES", 4987, 4)]}, 0, ""
+"#,
+        )
+        .expect("temp trader file should be written");
+
+        let dataset_override = NormalizedDataset {
+            schema_version: "test".to_string(),
+            competition_version: "test".to_string(),
+            dataset_id: "market-consume-test".to_string(),
+            source: "test".to_string(),
+            products: vec!["TOMATOES".to_string()],
+            metadata: IndexMap::new(),
+            ticks: vec![TickSnapshot {
+                timestamp: 132100,
+                day: Some(-1),
+                products: IndexMap::from([(
+                    "TOMATOES".to_string(),
+                    ProductSnapshot {
+                        product: "TOMATOES".to_string(),
+                        bids: vec![
+                            OrderBookLevel {
+                                price: 4986,
+                                volume: 10,
+                            },
+                            OrderBookLevel {
+                                price: 4985,
+                                volume: 19,
+                            },
+                        ],
+                        asks: vec![
+                            OrderBookLevel {
+                                price: 5000,
+                                volume: 10,
+                            },
+                            OrderBookLevel {
+                                price: 5001,
+                                volume: 19,
+                            },
+                        ],
+                        mid_price: Some(4993.0),
+                    },
+                )]),
+                market_trades: IndexMap::from([(
+                    "TOMATOES".to_string(),
+                    vec![crate::model::MarketTrade {
+                        symbol: "TOMATOES".to_string(),
+                        price: 4986,
+                        quantity: 4,
+                        buyer: String::new(),
+                        seller: String::new(),
+                        timestamp: 132100,
+                    }],
+                )]),
+                observations: ObservationState::default(),
+            }],
+        };
+
+        let request = RunRequest {
+            trader_file,
+            dataset_file: project_root().join("datasets/tutorial/prices_round_0_day_-1.csv"),
+            dataset_override: Some(dataset_override),
+            day: None,
+            matching: MatchingConfig::default(),
+            run_id: Some("consume-market-check".to_string()),
+            output_root: output_root.clone(),
+            persist: false,
+            write_metrics: true,
+            write_bundle: true,
+            write_submission_log: true,
+            materialize_artifacts: true,
+            metadata_overrides: Default::default(),
+        };
+
+        let output = run_backtest(&request).expect("backtest should succeed");
+        let artifacts = output
+            .artifacts
+            .as_ref()
+            .expect("artifacts should be available for materialized runs");
+        let bundle: Value =
+            serde_json::from_slice(&artifacts.bundle_json).expect("bundle JSON should parse");
+        let timeline = bundle["timeline"]
+            .as_array()
+            .expect("timeline should be an array");
+        let tick = timeline.first().expect("timeline should include one tick");
+
+        assert_eq!(
+            tick["own_trades"]
+                .as_array()
+                .expect("own_trades should be an array")
+                .len(),
+            1
+        );
+        assert_eq!(
+            tick["market_trades"]
+                .as_array()
+                .expect("market_trades should be an array")
+                .len(),
+            0
+        );
+
+        let submission_log: Value = serde_json::from_slice(&artifacts.submission_log)
+            .expect("submission log JSON should parse");
+        let trade_history = submission_log["tradeHistory"]
+            .as_array()
+            .expect("tradeHistory should be an array");
+        assert_eq!(trade_history.len(), 1);
+        assert_eq!(trade_history[0]["buyer"].as_str(), Some("SUBMISSION"));
+        assert_eq!(trade_history[0]["price"].as_i64(), Some(4987));
 
         fs::remove_dir_all(output_root).expect("temp output root should be cleaned up");
     }
