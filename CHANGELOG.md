@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.4.5 - 2026-04-24
+
+### Fixed
+
+- Enforce the official round 3 position limits for `HYDROGEL_PACK`, `VELVETFRUIT_EXTRACT`, and all ten `VEV_*` vouchers.
+- Add the same round 3 limits to the bundled default trader.
+
 ## v0.4.4 - 2026-04-24
 
 ### Added
